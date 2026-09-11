@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/app"
+	"go.viam.com/rdk/spatialmath"
 	"go.viam.com/test"
 )
 
@@ -18,6 +20,13 @@ func armRow(at time.Duration, deg ...float64) *app.ExportTabularDataResponse {
 	return &app.ExportTabularDataResponse{
 		TimeCaptured: t0.Add(at),
 		Payload:      map[string]any{"positions": map[string]any{"values": vals}},
+	}
+}
+
+func poseRow(at time.Duration, x float64) *app.ExportTabularDataResponse {
+	return &app.ExportTabularDataResponse{
+		TimeCaptured: t0.Add(at),
+		Payload:      map[string]any{"pose": map[string]any{"x": x, "y": 2.0, "z": 3.0, "o_x": 0.0, "o_y": 0.0, "o_z": 1.0, "theta": 90.0}},
 	}
 }
 
@@ -38,7 +47,7 @@ func TestBuildSequenceSortsAndOffsetsFromFirstArmRow(t *testing.T) {
 		gripRow(150*time.Millisecond, "position_percentage", 50.0),
 		gripRow(-50*time.Millisecond, "position_percentage", 90.0),
 	}
-	seq, err := buildSequence("abc", arm, grip, "position_percentage")
+	seq, err := buildSequence("abc", "JointPositions", arm, grip, "position_percentage")
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, seq.ID, test.ShouldEqual, "abc")
 	test.That(t, seq.JointsDeg, test.ShouldResemble, [][]float64{{1, 2}, {5, 6}, {10, 20}})
@@ -49,9 +58,27 @@ func TestBuildSequenceSortsAndOffsetsFromFirstArmRow(t *testing.T) {
 }
 
 func TestBuildSequenceNoGripperRows(t *testing.T) {
-	seq, err := buildSequence("abc", []*app.ExportTabularDataResponse{armRow(0, 1)}, nil, "position_percentage")
+	seq, err := buildSequence("abc", "JointPositions", []*app.ExportTabularDataResponse{armRow(0, 1)}, nil, "position_percentage")
 	test.That(t, err, test.ShouldBeNil)
 	test.That(t, seq.HasGripper(), test.ShouldBeFalse)
+}
+
+func TestBuildSequenceEndPosition(t *testing.T) {
+	rows := []*app.ExportTabularDataResponse{poseRow(100*time.Millisecond, 10), poseRow(0, 1)}
+	seq, err := buildSequence("abc", "EndPosition", rows, nil, "")
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, seq.HasPoses(), test.ShouldBeTrue)
+	test.That(t, seq.JointsDeg, test.ShouldBeNil)
+	test.That(t, seq.Len(), test.ShouldEqual, 2)
+	test.That(t, seq.Offsets, test.ShouldResemble, []time.Duration{0, 100 * time.Millisecond})
+	want := spatialmath.NewPose(r3.Vector{X: 1, Y: 2, Z: 3}, &spatialmath.OrientationVectorDegrees{OZ: 1, Theta: 90})
+	test.That(t, spatialmath.PoseAlmostEqual(seq.Poses[0], want), test.ShouldBeTrue)
+	test.That(t, seq.Poses[1].Point().X, test.ShouldEqual, 10.0)
+
+	_, err = buildSequence("abc", "EndPosition", []*app.ExportTabularDataResponse{armRow(0, 1)}, nil, "")
+	test.That(t, err.Error(), test.ShouldContainSubstring, "no pose")
+	_, err = buildSequence("abc", "EndPosition", nil, nil, "")
+	test.That(t, err.Error(), test.ShouldContainSubstring, "no EndPosition rows")
 }
 
 func TestBuildSequenceErrors(t *testing.T) {
@@ -69,7 +96,7 @@ func TestBuildSequenceErrors(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := buildSequence("abc", c.arm, c.grip, "position_percentage")
+			_, err := buildSequence("abc", "JointPositions", c.arm, c.grip, "position_percentage")
 			test.That(t, err, test.ShouldNotBeNil)
 			test.That(t, err.Error(), test.ShouldContainSubstring, c.want)
 		})

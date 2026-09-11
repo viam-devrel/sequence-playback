@@ -29,6 +29,7 @@ func init() {
 
 type Config struct {
 	Arm                string         `json:"arm"`
+	Method             string         `json:"method,omitempty"` // JointPositions (default) or EndPosition
 	Gripper            string         `json:"gripper,omitempty"`
 	GripperPositionKey string         `json:"gripper_position_key,omitempty"`
 	SourceArm          string         `json:"source_arm,omitempty"`
@@ -43,6 +44,11 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	}
 	if cfg.SourceGripper != "" && cfg.Gripper == "" {
 		return nil, nil, fmt.Errorf("%s: source_gripper requires gripper", path)
+	}
+	switch cfg.Method {
+	case "", "JointPositions", "EndPosition":
+	default:
+		return nil, nil, fmt.Errorf("%s: method must be JointPositions or EndPosition, got %q", path, cfg.Method)
 	}
 	deps := []string{cfg.Arm}
 	if cfg.Gripper != "" {
@@ -118,7 +124,8 @@ func NewArmPlayback(ctx context.Context, deps resource.Dependencies, rawConf res
 		if s.cloudErr != nil {
 			return nil, s.cloudErr
 		}
-		return fetchSequence(ctx, s.dc, id, cmp.Or(cfg.SourceArm, cfg.Arm), cmp.Or(cfg.SourceGripper, cfg.Gripper), s.player.gripperKey)
+		return fetchSequence(ctx, s.dc, id, cmp.Or(cfg.Method, "JointPositions"),
+			cmp.Or(cfg.SourceArm, cfg.Arm), cmp.Or(cfg.SourceGripper, cfg.Gripper), s.player.gripperKey)
 	}
 	return s, nil
 }
@@ -183,16 +190,26 @@ func (s *armPlayback) play(ctx context.Context, cmd map[string]any) (map[string]
 			return nil, err
 		}
 	}
-	current, err := s.arm.JointPositions(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("reading arm joints: %w", err)
-	}
-	if len(current) != len(seq.JointsDeg[0]) {
-		return nil, fmt.Errorf("joint count mismatch: arm has %d, sequence %q has %d", len(current), id, len(seq.JointsDeg[0]))
-	}
-	inputs, err := s.toInputs(ctx, seq.JointsDeg)
-	if err != nil {
-		return nil, err
+	var move moveFunc
+	if seq.HasPoses() {
+		move = func(ctx context.Context, i int, extra map[string]any) error {
+			return s.arm.MoveToPosition(ctx, seq.Poses[i], extra)
+		}
+	} else {
+		current, err := s.arm.JointPositions(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("reading arm joints: %w", err)
+		}
+		if len(current) != len(seq.JointsDeg[0]) {
+			return nil, fmt.Errorf("joint count mismatch: arm has %d, sequence %q has %d", len(current), id, len(seq.JointsDeg[0]))
+		}
+		inputs, err := s.toInputs(ctx, seq.JointsDeg)
+		if err != nil {
+			return nil, err
+		}
+		move = func(ctx context.Context, i int, extra map[string]any) error {
+			return s.arm.MoveToJointPositions(ctx, inputs[i], extra)
+		}
 	}
 	useGripper := s.player.gripper != nil && seq.HasGripper()
 	if s.player.gripper != nil && !seq.HasGripper() {
@@ -209,16 +226,16 @@ func (s *armPlayback) play(ctx context.Context, cmd map[string]any) (map[string]
 	s.lastError = ""
 	wctx, cancel := context.WithCancel(context.Background())
 	s.cancel, s.done = cancel, make(chan struct{})
-	go s.worker(wctx, seq, inputs)
-	s.logger.Infow("playback started", "sequence_id", id, "frames", len(inputs), "duration", seq.Duration())
+	go s.worker(wctx, seq, move)
+	s.logger.Infow("playback started", "sequence_id", id, "frames", seq.Len(), "duration", seq.Duration())
 	return map[string]any{
-		"status": "playing", "sequence_id": id, "frame_count": len(inputs),
+		"status": "playing", "sequence_id": id, "frame_count": seq.Len(),
 		"duration_s": seq.Duration().Seconds(), "has_gripper": useGripper,
 	}, nil
 }
 
-func (s *armPlayback) worker(ctx context.Context, seq *Sequence, inputs [][]referenceframe.Input) {
-	err := s.player.run(ctx, seq, inputs)
+func (s *armPlayback) worker(ctx context.Context, seq *Sequence, move moveFunc) {
+	err := s.player.run(ctx, seq, move)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
@@ -252,7 +269,7 @@ func (s *armPlayback) Status(context.Context) (map[string]any, error) {
 	st := map[string]any{"state": "idle", "sequence_id": s.sequence, "last_error": s.lastError,
 		"frame_index": int(s.player.frameIndex.Load())}
 	if seq := s.cache[s.sequence]; seq != nil {
-		st["frame_count"] = len(seq.JointsDeg)
+		st["frame_count"] = seq.Len()
 	}
 	if s.cancel != nil {
 		st["state"] = "playing"

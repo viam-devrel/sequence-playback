@@ -13,6 +13,7 @@ import (
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	generic "go.viam.com/rdk/services/generic"
+	"go.viam.com/rdk/spatialmath"
 	"go.viam.com/rdk/testutils/inject"
 	"go.viam.com/test"
 )
@@ -168,6 +169,32 @@ func TestPlayErrorSurfacesThenClears(t *testing.T) {
 	test.That(t, err, test.ShouldBeNil)
 	st = waitIdle(t, r.svc)
 	test.That(t, st["last_error"], test.ShouldBeEmpty)
+}
+
+func TestPlayEndPositionUsesMoveToPosition(t *testing.T) {
+	r := newSvc(t, &Config{Arm: "a", Method: "EndPosition"})
+	// No joints on the arm at all: the pose path must not consult them.
+	r.arm.JointPositionsFunc = func(context.Context, map[string]any) ([]referenceframe.Input, error) {
+		return nil, errors.New("not called")
+	}
+	var got []spatialmath.Pose
+	r.arm.MoveToPositionFunc = func(_ context.Context, p spatialmath.Pose, _ map[string]any) error {
+		got = append(got, p)
+		return nil
+	}
+	r.svc.fetch = func(_ context.Context, id string) (*Sequence, error) {
+		s := threeFrames()
+		s.JointsDeg = nil
+		s.Poses = []spatialmath.Pose{spatialmath.NewZeroPose(), spatialmath.NewZeroPose(), spatialmath.NewZeroPose()}
+		return s, nil
+	}
+	resp, err := do(t, r.svc, map[string]any{"command": "play", "sequence_id": "p1"})
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, resp["frame_count"], test.ShouldEqual, 3)
+	st := waitIdle(t, r.svc)
+	test.That(t, st["last_error"], test.ShouldBeEmpty)
+	test.That(t, st["frame_count"], test.ShouldEqual, 3)
+	test.That(t, len(got), test.ShouldEqual, 3)
 }
 
 func TestListRequiresDatasetID(t *testing.T) {

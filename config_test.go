@@ -29,6 +29,16 @@ func TestConfigValidate(t *testing.T) {
 	})
 }
 
+func TestConfigMethod(t *testing.T) {
+	for _, m := range []string{"", "JointPositions", "EndPosition"} {
+		_, _, err := (&Config{Arm: "a", Method: m}).Validate("x")
+		test.That(t, err, test.ShouldBeNil)
+	}
+	_, _, err := (&Config{Arm: "a", Method: "Pose"}).Validate("x")
+	test.That(t, err, test.ShouldNotBeNil)
+	test.That(t, err.Error(), test.ShouldContainSubstring, "method")
+}
+
 func TestConfigArmExtraDefault(t *testing.T) {
 	test.That(t, (&Config{}).armExtra(), test.ShouldResemble, map[string]any{"wait": false, "streamed": true})
 	test.That(t, (&Config{ArmExtra: map[string]any{}}).armExtra(), test.ShouldResemble, map[string]any{})

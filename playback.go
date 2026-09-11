@@ -8,7 +8,6 @@ import (
 
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
-	"go.viam.com/rdk/referenceframe"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -52,9 +51,13 @@ func (p *player) setGripper(ctx context.Context, pos float64) error {
 	return err
 }
 
+// moveFunc issues arm frame i with the given extra; the caller decides whether that is a
+// joint or a pose move.
+type moveFunc func(ctx context.Context, i int, extra map[string]any) error
+
 // run blocks until the sequence has played, failed, or ctx is cancelled. The arm is always
-// sent Stop before returning. inputs are seq.JointsDeg already converted to arm inputs.
-func (p *player) run(ctx context.Context, seq *Sequence, inputs [][]referenceframe.Input) (err error) {
+// sent Stop before returning.
+func (p *player) run(ctx context.Context, seq *Sequence, move moveFunc) (err error) {
 	p.frameIndex.Store(0)
 	defer func() {
 		if stopErr := p.arm.Stop(context.Background(), nil); stopErr != nil && err == nil {
@@ -66,7 +69,7 @@ func (p *player) run(ctx context.Context, seq *Sequence, inputs [][]referencefra
 
 	// Safe entry: a blocking move to the first frame, and the gripper to its first value.
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return p.arm.MoveToJointPositions(gctx, inputs[0], nil) })
+	g.Go(func() error { return move(gctx, 0, nil) })
 	if useGripper {
 		g.Go(func() error { return p.setGripper(gctx, seq.GripperPositions[0]) })
 	}
@@ -82,11 +85,11 @@ func (p *player) run(ctx context.Context, seq *Sequence, inputs [][]referencefra
 	}
 	g, gctx = errgroup.WithContext(ctx)
 	g.Go(func() error {
-		for i := 1; i < len(inputs); i++ {
+		for i := 1; i < seq.Len(); i++ {
 			if err := waitUntil(gctx, seq.Offsets[i]); err != nil {
 				return err
 			}
-			if err := p.arm.MoveToJointPositions(gctx, inputs[i], p.armExtra); err != nil {
+			if err := move(gctx, i, p.armExtra); err != nil {
 				return fmt.Errorf("frame %d: %w", i, err)
 			}
 			p.frameIndex.Store(int64(i + 1))

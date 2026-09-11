@@ -2,26 +2,34 @@ package sequenceplayback
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
 
+	commonpb "go.viam.com/api/common/v1"
 	"go.viam.com/rdk/app"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
+	"go.viam.com/rdk/spatialmath"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Sequence is one captured demonstration, ready to replay. Joint values are kept in the
+// Sequence is one captured demonstration, ready to replay. Exactly one of JointsDeg or
+// Poses is populated, depending on the captured arm method. Joint values are kept in the
 // captured unit (degrees); conversion to the arm's inputs happens at play time.
 type Sequence struct {
 	ID               string
-	Offsets          []time.Duration // per frame, from the first arm row
-	JointsDeg        [][]float64
-	GripperOffsets   []time.Duration // same origin as Offsets; may be negative
+	Offsets          []time.Duration    // per frame, from the first arm row
+	JointsDeg        [][]float64        // JointPositions captures
+	Poses            []spatialmath.Pose // EndPosition captures
+	GripperOffsets   []time.Duration    // same origin as Offsets; may be negative
 	GripperPositions []float64
 }
 
 func (s *Sequence) HasGripper() bool        { return len(s.GripperPositions) > 0 }
+func (s *Sequence) HasPoses() bool          { return len(s.Poses) > 0 }
+func (s *Sequence) Len() int                { return len(s.Offsets) }
 func (s *Sequence) Duration() time.Duration { return s.Offsets[len(s.Offsets)-1] }
 
 func sortRows(rows []*app.ExportTabularDataResponse) {
@@ -45,6 +53,24 @@ func jointValues(payload map[string]any) ([]float64, error) {
 	return out, nil
 }
 
+// poseValue decodes an EndPosition payload. protojson accepts both the exported snake_case
+// keys (o_x) and lowerCamel (oX).
+func poseValue(payload map[string]any) (spatialmath.Pose, error) {
+	raw, ok := payload["pose"]
+	if !ok {
+		return nil, fmt.Errorf("payload has no pose")
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var p commonpb.Pose
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("decoding pose: %w", err)
+	}
+	return spatialmath.NewPoseFromProtobuf(&p), nil
+}
+
 func gripperValue(payload map[string]any, key string) (float64, error) {
 	out, _ := payload["docommand_output"].(map[string]any)
 	v, ok := out[key]
@@ -58,11 +84,11 @@ func gripperValue(payload map[string]any, key string) (float64, error) {
 	return f, nil
 }
 
-// buildSequence turns exported JointPositions rows (and optional gripper DoCommand rows)
-// into a Sequence. Rows may arrive in any order.
-func buildSequence(id string, armRows, gripperRows []*app.ExportTabularDataResponse, gripperKey string) (*Sequence, error) {
+// buildSequence turns exported arm rows (JointPositions or EndPosition, per method) and
+// optional gripper DoCommand rows into a Sequence. Rows may arrive in any order.
+func buildSequence(id, method string, armRows, gripperRows []*app.ExportTabularDataResponse, gripperKey string) (*Sequence, error) {
 	if len(armRows) == 0 {
-		return nil, fmt.Errorf("sequence %q has no JointPositions rows", id)
+		return nil, fmt.Errorf("sequence %q has no %s rows", id, method)
 	}
 	sortRows(armRows)
 	sortRows(gripperRows)
@@ -70,14 +96,22 @@ func buildSequence(id string, armRows, gripperRows []*app.ExportTabularDataRespo
 
 	seq := &Sequence{ID: id}
 	for i, r := range armRows {
-		j, err := jointValues(r.Payload)
-		if err != nil {
-			return nil, fmt.Errorf("sequence %q arm row %d: %w", id, i, err)
+		if method == "EndPosition" {
+			p, err := poseValue(r.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("sequence %q arm row %d: %w", id, i, err)
+			}
+			seq.Poses = append(seq.Poses, p)
+		} else {
+			j, err := jointValues(r.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("sequence %q arm row %d: %w", id, i, err)
+			}
+			if i > 0 && len(j) != len(seq.JointsDeg[0]) {
+				return nil, fmt.Errorf("sequence %q arm row %d has %d joints, expected %d (joint count changed mid-sequence)", id, i, len(j), len(seq.JointsDeg[0]))
+			}
+			seq.JointsDeg = append(seq.JointsDeg, j)
 		}
-		if i > 0 && len(j) != len(seq.JointsDeg[0]) {
-			return nil, fmt.Errorf("sequence %q arm row %d has %d joints, expected %d (joint count changed mid-sequence)", id, i, len(j), len(seq.JointsDeg[0]))
-		}
-		seq.JointsDeg = append(seq.JointsDeg, j)
 		seq.Offsets = append(seq.Offsets, r.TimeCaptured.Sub(origin))
 	}
 	for i, r := range gripperRows {
@@ -92,15 +126,15 @@ func buildSequence(id string, armRows, gripperRows []*app.ExportTabularDataRespo
 }
 
 // fetchSequence pulls one captured sequence from Viam Cloud.
-func fetchSequence(ctx context.Context, dc *app.DataClient, id, sourceArm, sourceGripper, gripperKey string) (*Sequence, error) {
+func fetchSequence(ctx context.Context, dc *app.DataClient, id, method, sourceArm, sourceGripper, gripperKey string) (*Sequence, error) {
 	meta, err := dc.GetSequence(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("getting sequence %q: %w", id, err)
 	}
 	interval := app.CaptureInterval{Start: meta.StartTime, End: meta.EndTime}
-	armRows, err := dc.ExportTabularData(ctx, meta.PartID, sourceArm, arm.API.String(), "JointPositions", interval, nil)
+	armRows, err := dc.ExportTabularData(ctx, meta.PartID, sourceArm, arm.API.String(), method, interval, nil)
 	if err != nil {
-		return nil, fmt.Errorf("exporting %s JointPositions for sequence %q: %w", sourceArm, id, err)
+		return nil, fmt.Errorf("exporting %s %s for sequence %q: %w", sourceArm, method, id, err)
 	}
 	var gripperRows []*app.ExportTabularDataResponse
 	if sourceGripper != "" {
@@ -109,7 +143,7 @@ func fetchSequence(ctx context.Context, dc *app.DataClient, id, sourceArm, sourc
 			return nil, fmt.Errorf("exporting %s DoCommand for sequence %q: %w", sourceGripper, id, err)
 		}
 	}
-	return buildSequence(id, armRows, gripperRows, gripperKey)
+	return buildSequence(id, method, armRows, gripperRows, gripperKey)
 }
 
 // listSequences summarizes every sequence in a dataset.

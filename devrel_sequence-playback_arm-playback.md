@@ -17,6 +17,7 @@ Replays a recorded sequence on an arm, and optionally a gripper, at the recorded
 | Name | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `arm` | string | Yes | | The arm to move. |
+| `method` | string | No | `JointPositions` | Which arm capture to replay: `JointPositions` (replayed with `MoveToJointPositions`) or `EndPosition` (replayed with `MoveToPosition`). |
 | `gripper` | string | No | | The gripper to move, using its `set_position` DoCommand. |
 | `gripper_position_key` | string | No | `position_percentage` | The field in the gripper's `get_position` response that holds the position. Also used when calling `set_position`. |
 | `source_arm` | string | No | same as `arm` | The name of the arm in the recording. Set this to the leader arm to replay its motion on the follower. |
@@ -26,7 +27,8 @@ Replays a recorded sequence on an arm, and optionally a gripper, at the recorded
 
 ## What the recording needs to contain
 
-- For the arm: `JointPositions` captured by the data manager.
+- For the arm: `JointPositions` (default) or `EndPosition` captured by the data manager,
+  matching `method`.
 - For the gripper: a `DoCommand` capture with `{"command": "get_position"}` as the input.
 
 ## How playback works
@@ -55,7 +57,7 @@ Returns `sequences`, each with `id`, `tags`, `start`, and `duration_s`.
 ### play
 
 Starts playing a sequence in the background and returns right away. Fails if something is
-already playing or if the recording's joint count doesn't match the arm.
+already playing or, for `JointPositions`, if the recording's joint count doesn't match the arm.
 
 ```json
 { "command": "play", "sequence_id": "<sequence id>" }
