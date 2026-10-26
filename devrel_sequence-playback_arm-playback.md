@@ -18,7 +18,7 @@ Replays a recorded sequence on an arm, and optionally a gripper, at the recorded
 |---|---|---|---|---|
 | `arm` | string | Yes | | The arm to move. |
 | `gripper` | string | No | | The gripper to move, using its `set_position` DoCommand. |
-| `gripper_position_key` | string | No | `position_percentage` | The field in the gripper's `get_position` response that holds the position. Also used when calling `set_position`. |
+| `gripper_position_key` | string | No | `position_percentage` | The field in the recorded gripper `DoCommand` response that holds the position. Also used when calling `set_position`, except `position`: see below. |
 | `source_arm` | string | No | same as `arm` | The name of the arm in the recording. Set this to the leader arm to replay its motion on the follower. |
 | `source_gripper` | string | No | same as `gripper` | The name of the gripper in the recording. |
 | `dataset_id` | string | No | | The dataset to list sequences from. Needed for the `list` command. |
@@ -28,6 +28,8 @@ Replays a recorded sequence on an arm, and optionally a gripper, at the recorded
 
 - For the arm: `JointPositions` captured by the data manager.
 - For the gripper: a `DoCommand` capture with `{"command": "get_position"}` as the input.
+  A capture with the `{"get": true}` shorthand also works: set `gripper_position_key` to
+  `position`, and playback writes with the matching `{"set": <position>}`.
 
 ## How playback works
 

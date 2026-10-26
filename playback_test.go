@@ -133,6 +133,18 @@ func TestRunDrivesGripperOnSharedClockAndDedupes(t *testing.T) {
 	test.That(t, r.stops, test.ShouldEqual, 1)
 }
 
+func TestRunWritesGetShorthandRecordingsWithSet(t *testing.T) {
+	r := newRig(t, true)
+	r.player.gripperKey = "position"
+	seq := threeFrames()
+	seq.GripperOffsets = []time.Duration{0, 200 * time.Millisecond}
+	seq.GripperPositions = []float64{90, 10}
+	inputs := [][]referenceframe.Input{rads(0, 0), rads(90, 0), rads(180, 0)}
+	err := r.player.run(context.Background(), seq, inputs)
+	test.That(t, err, test.ShouldBeNil)
+	test.That(t, r.grips, test.ShouldResemble, []map[string]any{{"set": 90.0}, {"set": 10.0}})
+}
+
 func TestRunWithoutGripperDataLeavesGripperAlone(t *testing.T) {
 	r := newRig(t, true)
 	inputs := [][]referenceframe.Input{rads(0, 0), rads(90, 0), rads(180, 0)}

@@ -47,8 +47,15 @@ type player struct {
 	frameIndex atomic.Int64 // frames issued so far, for status
 }
 
+// setGripper writes pos back in the form it was read in. A recording captured with the
+// {"get": true} shorthand stores "position", which set_position does not take; its write
+// is the {"set": pos} shorthand.
 func (p *player) setGripper(ctx context.Context, pos float64) error {
-	_, err := p.gripper.DoCommand(ctx, map[string]any{"command": "set_position", p.gripperKey: pos})
+	cmd := map[string]any{"command": "set_position", p.gripperKey: pos}
+	if p.gripperKey == "position" {
+		cmd = map[string]any{"set": pos}
+	}
+	_, err := p.gripper.DoCommand(ctx, cmd)
 	return err
 }
 

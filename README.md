@@ -16,7 +16,8 @@ learn from.
 ## Notes
 
 - This module does not record. Use the data manager's sequence capture to record
-  `JointPositions` on the arm and `get_position` (via `DoCommand`) on the gripper.
+  `JointPositions` on the arm and `get_position` or `{"get": true}` (via `DoCommand`) on the
+  gripper.
 - The module reads from Viam Cloud using the API key that viam-server gives modules. If you
   run the binary by hand without those environment variables, `play` and `list` will fail
   with a clear error.
